@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Mini-Blockchain UFSC</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+
+    <style>
+        /* Estilo para a tabela se manter organizada */
+        table {
+            table-layout: fixed; /* Força a largura das colunas */
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+            vertical-align: top; /* Alinha o conteúdo no topo da célula */
+        }
+
+        /* Coluna do Hash: Força a quebra de linha para baixo */
+        .col-hash {
+            width: 35%; /* Define uma largura fixa para o hash */
+            word-break: break-all; /* Faz o "asdasd..." pular linha quando bater na borda */
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            color: #555;
+        }
+
+        /* Coluna de Dados Decifrados */
+        .col-dados {
+            width: 30%;
+            word-wrap: break-word;
+        }
+
+        /* Colunas Menores */
+        .col-dono { width: 15%; }
+        .col-status { width: 10%; text-align: center; }
+    </style>
+</head>
+    <body class="bg-light">
+        <div class="container mt-5">
+            <h2>Bem-vindo, {{ session['user'] }}</h2>
+    <form action="/add_block" method="POST">
+        <input type="text" name="data" placeholder="O que deseja registrar?" required>
+        <button type="submit">Adicionar Bloco</button>
+    </form>
+
+    <table>
+    <thead style="background-color: #f8f9fa;">
+        <tr>
+            <th class="col-dono">Dono</th>
+            <th class="col-hash">Hash Anterior</th>
+            <th class="col-dados">Conteúdo Decifrado</th>
+            <th class="col-status">Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for block in chain %}
+        <tr>
+            <td>{{ block.owner }}</td>
+            <td class="col-hash">{{ block.prev_hash }}</td>
+            <td class="col-dados"><b>{{ block.decrypted_data }}</b></td>
+            <td class="col-status">
+                {% if block.valid %} ✅ {% else %} ❌ {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+    <a href="/logout">Sair</a>
+    </div>
+</body>
+</html>
