@@ -1,0 +1,9 @@
+Flask
+cryptography
+pyotp
+qrcode
+Pillow
+Flask-SQLAlchemy
+Flask-Migrate
+psycopg2-binary
+python-dotenv
