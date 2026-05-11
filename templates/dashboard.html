@@ -43,6 +43,16 @@
     <body class="bg-light">
         <div class="container mt-5">
             <h2>Bem-vindo, {{ session['user'] }}</h2>
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="alert alert-danger shadow-sm" role="alert">
+                            <strong>⚠️ {{ message }}</strong>
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
     <form action="/add_block" method="POST">
         <input type="text" name="data" placeholder="O que deseja registrar?" required>
         <button type="submit">Adicionar Bloco</button>

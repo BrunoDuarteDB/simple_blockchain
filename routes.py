@@ -3,7 +3,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, sessio
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from extensions import db
-from models import User, Block
+from models import User, Block, AuditLog
 from utils import derive_key
 
 main_bp = Blueprint('main', __name__)
@@ -12,6 +12,7 @@ main_bp = Blueprint('main', __name__)
 def index():
     return render_template('login.html')
 
+# --- Registro com TOTP Cifrado (Requisito 6.vi) ---
 @main_bp.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -22,36 +23,37 @@ def register():
             flash("Usuário já existe!")
             return redirect(url_for('main.register'))
         
-        # 1. Parâmetros de segurança
-        salt = os.urandom(16) # [cite: 66, 73]
-        totp_secret = pyotp.random_base32() # [cite: 25]
-        key = derive_key(pw, salt) # PBKDF2 
+        salt = os.urandom(16) # 
+        totp_raw = pyotp.random_base32() # Segredo em texto claro
+        key = derive_key(pw, salt) # PBKDF2
         
-        # 2. Geração do QR Code
-        totp_auth_url = pyotp.totp.TOTP(totp_secret).provisioning_uri(
-            name=user, 
-            issuer_name="UFSC-Blockchain"
+        # Cifrando o Segredo TOTP antes de salvar
+        iv_totp = os.urandom(12)# 
+        aesgcm = AESGCM(key)
+        totp_encrypted = aesgcm.encrypt(iv_totp, totp_raw.encode(), None)
+        
+        new_user = User(
+            username=user,
+            salt=salt.hex(),
+            totp_secret=totp_encrypted.hex(), # Salvo cifrado!
+            totp_iv=iv_totp.hex(),
+            key_hash=hashlib.sha256(key).hexdigest()
         )
+        db.session.add(new_user)
+        db.session.add(AuditLog(user=user, action="Novo usuário registrado", status="SUCESSO"))
+        db.session.commit()
         
+        # Gera o QR Code com o segredo em texto claro (apenas para exibição única)
+        totp_auth_url = pyotp.totp.TOTP(totp_raw).provisioning_uri(name=user, issuer_name="UFSC-Blockchain")
         img = qrcode.make(totp_auth_url)
         buf = io.BytesIO()
         img.save(buf)
         qr_base64 = base64.b64encode(buf.getvalue()).decode()
 
-        # 3. O que realmente salvamos
-        new_user = User(
-            username=user,
-            salt=salt.hex(), 
-            totp_secret=totp_secret,
-            key_hash=hashlib.sha256(key).hexdigest() 
-        )
-        db.session.add(new_user)
-        db.session.commit()
-        
-        return render_template('register_success.html', user=user, secret=totp_secret, qr_code=qr_base64)
-    
+        return render_template('register_success.html', user=user, secret=totp_raw, qr_code=qr_base64)
     return render_template('register.html')
 
+# --- Login com Decifragem do TOTP ---
 @main_bp.route('/login', methods=['POST'])
 def login():
     user = request.form['username']
@@ -60,22 +62,30 @@ def login():
     
     u_data = User.query.filter_by(username=user).first()
     if not u_data:
-        print(f"DEBUG: Usuário {user} não encontrado!")
         flash("Usuário não encontrado.")
         return redirect(url_for('main.index'))
     
-    key = derive_key(pw, bytes.fromhex(u_data.salt))
+    key = derive_key(pw, bytes.fromhex(u_data.salt)) # 
     
-    # Valida Senha e TOTP
     if hashlib.sha256(key).hexdigest() == u_data.key_hash:
-        totp = pyotp.TOTP(u_data.totp_secret)
-        is_valid = totp.verify(token)
-        print(f"DEBUG: Senha correta! TOTP Válido? {is_valid}")
-        if is_valid:
-            session['user'] = user
-            session['key'] = key.hex() 
-            return redirect(url_for('main.dashboard'))
+        try:
+            # Decifrando o segredo para validar o token
+            aesgcm = AESGCM(key)
+            totp_raw = aesgcm.decrypt(bytes.fromhex(u_data.totp_iv), bytes.fromhex(u_data.totp_secret), None).decode()
+            
+            if pyotp.TOTP(totp_raw).verify(token):
+                session['user'] = user
+                session['key'] = key.hex()
+                # Log de Sucesso
+                db.session.add(AuditLog(user=user, action="Login realizado", status="SUCESSO"))
+                db.session.commit()
+                return redirect(url_for('main.dashboard'))
+        except:
+            pass
     
+    # Log de Falha
+    db.session.add(AuditLog(user=user, action="Tentativa de login", status="FALHA"))
+    db.session.commit()
     flash("Senha ou TOTP inválido!")
     return redirect(url_for('main.index'))
 
@@ -112,9 +122,17 @@ def dashboard():
         
     return render_template('dashboard.html', chain=processed_chain)
 
+# --- Adição de Bloco com Verificação de Integridade (Travamento) ---
 @main_bp.route('/add_block', methods=['POST'])
 def add_block():
     if 'user' not in session: return redirect(url_for('main.index'))
+    
+    # Validação da Cadeia antes de permitir nova escrita
+    db_chain = Block.query.order_by(Block.id).all()
+    for i in range(1, len(db_chain)):
+        if db_chain[i].prev_hash != db_chain[i-1].current_hash:
+            flash("SISTEMA TRAVADO: Falha de integridade detectada na Blockchain!")
+            return redirect(url_for('main.dashboard'))
     
     data = request.form['data']
     user = session['user']
@@ -131,8 +149,22 @@ def add_block():
     block_bytes = json.dumps(block, sort_keys=True).encode()
     block['current_hash'] = hashlib.sha256(block_bytes).hexdigest()
     
-    new_block = Block(owner=block['owner'], timestamp=block['timestamp'], iv=block['iv'], data=block['data'], prev_hash=block['prev_hash'], current_hash=block['current_hash'])
+    new_block = Block(
+        owner=block['owner'], 
+        timestamp=block['timestamp'], 
+        iv=block['iv'], 
+        data=block['data'], 
+        prev_hash=block['prev_hash'], 
+        current_hash=block['current_hash']
+    )
     db.session.add(new_block)
+    db.session.commit()
+
+    db.session.add(AuditLog(
+        user=session['user'], 
+        action=f"Bloco {new_block.id} minerado", 
+        status="SUCESSO"
+    ))
     db.session.commit()
 
     return redirect(url_for('main.dashboard'))
